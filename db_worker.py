@@ -13,7 +13,7 @@ async def db_insert_raw(
     payload: Any,
     returning: str = "minimal",
     log_label: str = "DB",
-) -> Any:
+) -> dict:
     """
     Generic raw insert helper.
 
@@ -25,9 +25,8 @@ async def db_insert_raw(
     - sends exactly what it receives
     - waits for DB success/failure
     - logs and returns
-
-    Added:
     - retries up to 2 additional times on failure (total 3 attempts)
+    - never raises; always returns success/failure payload
 
     Args:
         client: shared AsyncClient
@@ -39,10 +38,9 @@ async def db_insert_raw(
         log_label: prefix for logs
 
     Returns:
-        Parsed JSON response when present, else None.
-
-    Raises:
-        Exception: if all retry attempts fail
+        dict:
+        - success=True, data=..., status_code=...
+        - success=False, error=..., status_code=..., attempts=...
     """
     endpoint = f"{base_url.rstrip('/')}/rest/v1/{table}"
     headers = {
@@ -59,7 +57,7 @@ async def db_insert_raw(
         f"payload={json.dumps(payload, default=str, sort_keys=True)}"
     )
 
-    last_error = None
+    last_error_payload = None
 
     # Attempt insert up to 3 times (1 initial + 2 retries)
     for attempt in range(1, 4):
@@ -77,15 +75,50 @@ async def db_insert_raw(
                 f"[{log_label}][DB_APPLIED] action=insert table={table} rows={row_count} attempt={attempt}"
             )
 
-            return response.json() if response.text else None
+            return {
+                "success": True,
+                "status_code": response.status_code,
+                "attempts": attempt,
+                "data": response.json() if response.text else None,
+            }
+
+        except httpx.HTTPStatusError as e:
+            response = e.response
+            error_body: Any
+            try:
+                error_body = response.json() if response is not None and response.text else None
+            except Exception:
+                error_body = response.text if response is not None else str(e)
+
+            last_error_payload = {
+                "success": False,
+                "status_code": response.status_code if response is not None else None,
+                "attempts": attempt,
+                "error": error_body,
+            }
+
+            print(
+                f"[{log_label}][DB_ERROR] action=insert table={table} rows={row_count} "
+                f"attempt={attempt} status={response.status_code if response is not None else 'unknown'} "
+                f"error={json.dumps(error_body, default=str, sort_keys=True)}"
+            )
 
         except Exception as e:
-            last_error = e
+            last_error_payload = {
+                "success": False,
+                "status_code": None,
+                "attempts": attempt,
+                "error": str(e),
+            }
 
             print(
                 f"[{log_label}][DB_ERROR] action=insert table={table} rows={row_count} "
                 f"attempt={attempt} error={str(e)}"
             )
 
-            if attempt == 3:
-                raise last_error
+    return last_error_payload or {
+        "success": False,
+        "status_code": None,
+        "attempts": 3,
+        "error": "unknown insert failure",
+    }
