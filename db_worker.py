@@ -4,6 +4,127 @@ from typing import Any
 import httpx
 
 
+async def active_cleanup(
+    client: httpx.AsyncClient,
+    *,
+    base_url: str,
+    key: str,
+    strategy: str,
+    version: str,
+    setup_id: str,
+    log_label: str = "DB",
+    returning: str = "minimal",
+) -> dict:
+    """
+    Patch active_trades for one setup using tags:
+    - strategy:<strategy>
+    - version:<version>
+    - id:<setup_id>
+
+    Action:
+    - set manage = "C"
+
+    Rules:
+    - no pre-query
+    - no post-query
+    - wait only for DB patch response
+    - log and return DB message
+    """
+    endpoint = f"{base_url.rstrip('/')}/rest/v1/active_trades"
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": f"return={returning}",
+    }
+    params = {
+        "tags": f'cs.{{"strategy:{strategy}","version:{version}","id:{setup_id}"}}',
+    }
+    payload = {
+        "manage": "C",
+        "note": f"bridge:{setup_id}",
+    }
+
+    print(
+        f"[{log_label}][DB_WRITE] action=patch table=active_trades "
+        f"strategy={strategy} version={version} setup_id={setup_id} "
+        f"params={json.dumps(params, default=str, sort_keys=True)} "
+        f"payload={json.dumps(payload, default=str, sort_keys=True)}"
+    )
+
+    try:
+        response = await client.patch(
+            endpoint,
+            headers=headers,
+            params=params,
+            json=payload,
+            timeout=30.0,
+        )
+        response.raise_for_status()
+
+        data = response.json() if response.text else None
+
+        print(
+            f"[{log_label}][DB_APPLIED] action=patch table=active_trades "
+            f"strategy={strategy} version={version} setup_id={setup_id}"
+        )
+
+        return {
+            "success": True,
+            "status_code": response.status_code,
+            "data": data,
+            "error": None,
+        }
+
+    except httpx.HTTPStatusError as e:
+        response = e.response
+        try:
+            error_body: Any = response.json() if response is not None and response.text else None
+        except Exception:
+            error_body = response.text if response is not None else str(e)
+
+        print(
+            f"[{log_label}][DB_ERROR] action=patch table=active_trades "
+            f"strategy={strategy} version={version} setup_id={setup_id} "
+            f"status={response.status_code if response is not None else 'unknown'} "
+            f"error={json.dumps(error_body, default=str, sort_keys=True)}"
+        )
+
+        return {
+            "success": False,
+            "status_code": response.status_code if response is not None else None,
+            "data": None,
+            "error": error_body,
+        }
+
+    except Exception as e:
+        print(
+            f"[{log_label}][DB_ERROR] action=patch table=active_trades "
+            f"strategy={strategy} version={version} setup_id={setup_id} "
+            f"error={str(e)}"
+        )
+
+        return {
+            "success": False,
+            "status_code": None,
+            "data": None,
+            "error": str(e),
+        }
+
+
+
+
+
+
+
+
+
+import json
+from typing import Any
+
+import httpx
+
+
 async def active_trades_checker(
     client: httpx.AsyncClient,
     *,
